@@ -1,0 +1,4 @@
+NAME                    IMAGE                 COMMAND                  SERVICE    CREATED          STATUS                    PORTS
+venuevista-backend-1    venuevista-backend    "java -jar app.jar"      backend    8 minutes ago    Up 2 minutes              127.0.0.1:8091->8080/tcp
+venuevista-db-1         postgres:17-alpine    "docker-entrypoint.s…"   db         13 minutes ago   Up 13 minutes (healthy)   5432/tcp
+venuevista-frontend-1   venuevista-frontend   "/docker-entrypoint.…"   frontend   5 minutes ago    Up 5 minutes              127.0.0.1:4301->80/tcp

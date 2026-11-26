@@ -1,0 +1,8 @@
+package com.venuevista;
+import org.springframework.data.jpa.repository.*;
+import jakarta.persistence.LockModeType;
+import java.util.Optional;
+public interface EventRepository extends JpaRepository<Event, Long> {
+    @Lock(LockModeType.PESSIMISTIC_WRITE) @Query("select e from Event e where e.id = :id")
+    Optional<Event> lockById(Long id);
+}

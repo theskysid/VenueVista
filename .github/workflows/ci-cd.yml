@@ -1,0 +1,202 @@
+name: VenueVista P_014 CI and CD
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: venuevista-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  backend:
+    name: Backend tests with H2
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+      - run: mvn --batch-mode --no-transfer-progress -f backend/pom.xml verify
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: backend-test-results
+          path: backend/target/surefire-reports/
+          if-no-files-found: warn
+
+  oracle:
+    name: Backend tests with Oracle DB
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      oracle:
+        image: gvenzl/oracle-free:23-slim
+        env:
+          ORACLE_PASSWORD: OracleCiAdmin26
+          APP_USER: venuevista_test
+          APP_USER_PASSWORD: OracleCiTests26
+        ports:
+          - 1521:1521
+        options: >-
+          --shm-size=1g
+          --health-cmd healthcheck.sh
+          --health-interval 10s
+          --health-timeout 5s
+          --health-start-period 60s
+          --health-retries 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+      - name: Test against an isolated Oracle schema
+        env:
+          TEST_DB_URL: jdbc:oracle:thin:@//localhost:1521/FREEPDB1
+          TEST_DB_USER: venuevista_test
+          TEST_DB_PASSWORD: OracleCiTests26
+        run: mvn --batch-mode --no-transfer-progress -f backend/pom.xml verify
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: oracle-test-results
+          path: backend/target/surefire-reports/
+          if-no-files-found: warn
+
+  frontend:
+    name: Angular production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: angular-production-build
+          path: frontend/dist/venuevista/browser/
+          if-no-files-found: error
+
+  images:
+    name: Build and publish Docker images
+    needs: [backend, oracle, frontend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      repository: ${{ steps.names.outputs.repository }}
+      tag: ${{ steps.names.outputs.tag }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Set immutable release identity
+        id: names
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          echo "repository=${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "tag=sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      - name: Validate Compose and deployment scripts
+        run: |
+          docker compose config --quiet
+          bash -n scripts/deploy.sh scripts/check_health.sh scripts/run-local.sh
+          python3 scripts/test_deploy.py
+      - name: Build images
+        env:
+          IMAGE_REPOSITORY: ${{ steps.names.outputs.repository }}
+          IMAGE_TAG: ${{ steps.names.outputs.tag }}
+        run: |
+          docker build --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" -t "ghcr.io/${IMAGE_REPOSITORY}/backend:${IMAGE_TAG}" backend
+          docker build --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" -t "ghcr.io/${IMAGE_REPOSITORY}/frontend:${IMAGE_TAG}" frontend
+      - name: Publish main branch images to GHCR
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          IMAGE_REPOSITORY: ${{ steps.names.outputs.repository }}
+          IMAGE_TAG: ${{ steps.names.outputs.tag }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+          docker push "ghcr.io/${IMAGE_REPOSITORY}/backend:${IMAGE_TAG}"
+          docker push "ghcr.io/${IMAGE_REPOSITORY}/frontend:${IMAGE_TAG}"
+      - name: Record release metadata
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          IMAGE_REPOSITORY: ${{ steps.names.outputs.repository }}
+          IMAGE_TAG: ${{ steps.names.outputs.tag }}
+        run: |
+          printf 'IMAGE_REPOSITORY=%s\nIMAGE_TAG=%s\n' "$IMAGE_REPOSITORY" "$IMAGE_TAG" > release.env
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        with:
+          name: deployment-release
+          path: |
+            release.env
+            deploy/compose.deploy.yaml
+            scripts/deploy.sh
+            scripts/check_health.sh
+
+  deploy:
+    name: Deploy private staging
+    needs: images
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.ENABLE_STAGING_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: staging
+    concurrency:
+      group: venuevista-staging
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          test -n "$SSH_PRIVATE_KEY" && test -n "$SSH_KNOWN_HOSTS"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+      - name: Deploy the verified image pair
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ vars.SSH_PORT || '22' }}
+          DEPLOY_DIR: ${{ vars.DEPLOY_DIR || '/opt/venuevista' }}
+          IMAGE_REPOSITORY: ${{ needs.images.outputs.repository }}
+          IMAGE_TAG: ${{ needs.images.outputs.tag }}
+        run: |
+          [[ "$SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]
+          [[ "$SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ "$SSH_PORT" =~ ^[0-9]+$ ]]
+          [[ "$DEPLOY_DIR" =~ ^/[A-Za-z0-9/_-]+$ ]]
+          [[ "$IMAGE_REPOSITORY" =~ ^[a-z0-9._-]+/[a-z0-9._-]+$ ]]
+          [[ "$IMAGE_TAG" =~ ^sha-[0-9a-f]{40}$ ]]
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "test -d '$DEPLOY_DIR'"
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes -P "$SSH_PORT" deploy/compose.deploy.yaml scripts/deploy.sh scripts/check_health.sh "$SSH_USER@$SSH_HOST:$DEPLOY_DIR/"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "cd '$DEPLOY_DIR' && bash deploy.sh '$IMAGE_REPOSITORY' '$IMAGE_TAG'"
+      - name: Remove temporary SSH credentials
+        if: always()
+        run: rm -f "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"

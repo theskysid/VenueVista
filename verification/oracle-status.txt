@@ -1,0 +1,4 @@
+NAME                    IMAGE                        COMMAND                  SERVICE    CREATED          STATUS                    PORTS
+venuevista-backend-1    venuevista-backend           "java -jar app.jar"      backend    31 seconds ago   Up 25 seconds             127.0.0.1:8091->8080/tcp
+venuevista-db-1         gvenzl/oracle-free:23-slim   "container-entrypoin…"   db         34 seconds ago   Up 31 seconds (healthy)
+venuevista-frontend-1   venuevista-frontend          "/docker-entrypoint.…"   frontend   31 seconds ago   Up 25 seconds             127.0.0.1:4301->80/tcp

@@ -1,0 +1,37 @@
+name: venuevista
+services:
+  db:
+    image: gvenzl/oracle-free:23-slim
+    environment:
+      ORACLE_PASSWORD: ${ORACLE_PASSWORD:-OracleAdminDemo26}
+      APP_USER: venuevista
+      APP_USER_PASSWORD: ${DB_PASSWORD:-VenueVistaDemo26}
+    volumes:
+      - venuevista-oracle:/opt/oracle/oradata
+    shm_size: 1gb
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 60s
+  backend:
+    build: ./backend
+    environment:
+      DB_URL: jdbc:oracle:thin:@//db:1521/FREEPDB1
+      DB_USER: venuevista
+      DB_PASSWORD: ${DB_PASSWORD:-VenueVistaDemo26}
+      TZ: Asia/Kolkata
+    ports:
+      - "127.0.0.1:${API_PORT:-8080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+  frontend:
+    build: ./frontend
+    ports:
+      - "127.0.0.1:${UI_PORT:-4200}:80"
+    depends_on:
+      - backend
+volumes:
+  venuevista-oracle:

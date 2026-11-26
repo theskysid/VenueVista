@@ -1,0 +1,50 @@
+name: venuevista-staging
+services:
+  db:
+    image: gvenzl/oracle-free:23-slim
+    environment:
+      ORACLE_PASSWORD: ${ORACLE_PASSWORD:?Set ORACLE_PASSWORD in the server .env}
+      APP_USER: venuevista
+      APP_USER_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in the server .env}
+    shm_size: 1gb
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 60s
+    restart: unless-stopped
+  backend:
+    image: ghcr.io/${IMAGE_REPOSITORY:?Set IMAGE_REPOSITORY}/backend:${IMAGE_TAG:?Set IMAGE_TAG}
+    environment:
+      DB_URL: jdbc:oracle:thin:@//db:1521/FREEPDB1
+      DB_USER: venuevista
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD}
+      TZ: Asia/Kolkata
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+  frontend:
+    image: ghcr.io/${IMAGE_REPOSITORY:?Set IMAGE_REPOSITORY}/frontend:${IMAGE_TAG:?Set IMAGE_TAG}
+    ports:
+      - "127.0.0.1:${UI_PORT:-4200}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+volumes:
+  oracle-data:
